@@ -985,67 +985,76 @@
             }
 
             // --- ফিক্সড Pull Tab ফাংশন ---
-function initPullTab() {
+async function initPullTab() {
     const pullBtn = document.getElementById('pullBtn');
     const statusDiv = document.getElementById('pullStatus');
 
     pullBtn.addEventListener('click', async () => {
         const creds = getCreds();
         
-        // ভ্যালিডেশন চেক
         if (!creds.token || !creds.owner || !creds.repo) {
-            statusDiv.textContent = 'Error: Token, Owner, and Repo are required!';
-            statusDiv.className = 'text-sm text-center text-red-600 min-h-[20px]';
+            statusDiv.textContent = 'Error: Credentials missing!';
+            statusDiv.className = 'text-sm text-center text-red-600';
             return;
         }
 
-        statusDiv.textContent = 'Fetching repository ZIP...';
+        statusDiv.textContent = 'Requesting ZIP from GitHub...';
         statusDiv.className = 'text-sm text-center text-blue-600 animate-pulse';
         pullBtn.disabled = true;
 
         try {
-            // GitHub Zipball API URL
             const url = `https://api.github.com/repos/${creds.owner}/${creds.repo}/zipball/${creds.branch}`;
             
+            // fetch অপশনে redirect: 'follow' এবং mode: 'cors' নিশ্চিত করা হয়েছে
             const response = await fetch(url, {
                 method: 'GET',
                 headers: {
                     'Authorization': `token ${creds.token}`,
                     'Accept': 'application/vnd.github.v3+json'
-                }
+                },
+                redirect: 'follow' 
             });
 
             if (!response.ok) {
-                if (response.status === 404) throw new Error('Repo or Branch not found.');
-                if (response.status === 401) throw new Error('Invalid Token.');
-                throw new Error('Download failed. Status: ' + response.status);
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(errorData.message || `HTTP ${response.status}`);
             }
 
-            // ফাইলটিকে Blob হিসেবে রিসিভ করা
+            // রেসপন্স থেকে ডেটা (Blob) গ্রহণ করা
             const blob = await response.blob();
             
-            // ডাউনলোডের জন্য একটি ভার্চুয়াল লিঙ্ক তৈরি করা
+            if (blob.size === 0) throw new Error('Received empty file.');
+
             const downloadUrl = window.URL.createObjectURL(blob);
             const a = document.createElement('a');
-            a.style.display = 'none';
             a.href = downloadUrl;
-            a.download = `${creds.repo}-${creds.branch}.zip`; // ফাইলের নাম সেট করা
-            
+            a.download = `${creds.repo}-${creds.branch}.zip`;
             document.body.appendChild(a);
-            a.click(); // অটোমেটিক ক্লিক করে ডাউনলোড শুরু করা
+            a.click();
             
-            // মেমোরি ক্লিনআপ
-            window.URL.revokeObjectURL(downloadUrl);
-            document.body.removeChild(a);
+            // ক্লিনআপ
+            setTimeout(() => {
+                window.URL.revokeObjectURL(downloadUrl);
+                a.remove();
+            }, 100);
 
-            statusDiv.textContent = 'Download started successfully!';
+            statusDiv.textContent = 'Download started!';
             statusDiv.className = 'text-sm text-center text-green-600';
-            notify('Repository pulled successfully!');
+            notify('Repository pulled successfully');
 
         } catch (err) {
-            console.error('Pull Error:', err);
-            statusDiv.textContent = 'Error: ' + err.message;
-            statusDiv.className = 'text-sm text-center text-red-600';
+            console.error('Detailed Error:', err);
+            
+            // যদি এটি CORS এরর হয়, তবে ব্যবহারকারীকে একটি বিকল্প উপায় বলা
+            if (err.message === 'Failed to fetch') {
+                statusDiv.innerHTML = `
+                    <span class="text-red-600">Network Error / CORS Blocked.</span><br>
+                    <small class="text-gray-500">Try using a VPN or check if the Repo/Token is correct.</small>
+                `;
+            } else {
+                statusDiv.textContent = 'Error: ' + err.message;
+                statusDiv.className = 'text-sm text-center text-red-600';
+            }
         } finally {
             pullBtn.disabled = false;
         }
