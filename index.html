@@ -991,70 +991,75 @@ async function initPullTab() {
 
     pullBtn.addEventListener('click', async () => {
         const creds = getCreds();
-        
         if (!creds.token || !creds.owner || !creds.repo) {
             statusDiv.textContent = 'Error: Credentials missing!';
             statusDiv.className = 'text-sm text-center text-red-600';
             return;
         }
 
-        statusDiv.textContent = 'Requesting ZIP from GitHub...';
+        statusDiv.textContent = 'Fetching file list...';
         statusDiv.className = 'text-sm text-center text-blue-600 animate-pulse';
         pullBtn.disabled = true;
 
         try {
-            const url = `https://api.github.com/repos/${creds.owner}/${creds.repo}/zipball/${creds.branch}`;
-            
-            // fetch অপশনে redirect: 'follow' এবং mode: 'cors' নিশ্চিত করা হয়েছে
-            const response = await fetch(url, {
-                method: 'GET',
-                headers: {
-                    'Authorization': `token ${creds.token}`,
-                    'Accept': 'application/vnd.github.v3+json'
-                },
-                redirect: 'follow' 
+            // ১. রেপোজিটরির সব ফাইলের লিস্ট (Recursive Tree) আনা
+            const treeUrl = `https://api.github.com/repos/${creds.owner}/${creds.repo}/git/trees/${creds.branch}?recursive=1`;
+            const treeRes = await fetch(treeUrl, {
+                headers: { 'Authorization': `token ${creds.token}` }
             });
 
-            if (!response.ok) {
-                const errorData = await response.json().catch(() => ({}));
-                throw new Error(errorData.message || `HTTP ${response.status}`);
-            }
+            if (!treeRes.ok) throw new Error('Failed to fetch repository tree.');
+            const treeData = await treeRes.json();
 
-            // রেসপন্স থেকে ডেটা (Blob) গ্রহণ করা
-            const blob = await response.blob();
+            // শুধু ফাইলগুলো ফিল্টার করা (folders বাদ দিয়ে)
+            const files = treeData.tree.filter(item => item.type === 'blob');
             
-            if (blob.size === 0) throw new Error('Received empty file.');
+            // ২. JSZip ব্যবহার করে নতুন জিপ ফাইল তৈরি শুরু
+            const zip = new JSZip();
+            let downloadedCount = 0;
 
-            const downloadUrl = window.URL.createObjectURL(blob);
+            statusDiv.textContent = `Downloading 0 of ${files.length} files...`;
+
+            // ৩. প্রত্যেকটি ফাইল আলাদাভাবে ডাউনলোড করে জিপে ভরা
+            const downloadPromises = files.map(async (file) => {
+                const fileRes = await fetch(file.url, {
+                    headers: { 'Authorization': `token ${creds.token}` }
+                });
+                const fileData = await fileRes.json();
+                
+                // ফাইল কন্টেন্ট (Base64) জিপে অ্যাড করা
+                zip.file(file.path, fileData.content, { base64: true });
+                
+                downloadedCount++;
+                statusDiv.textContent = `Downloading ${downloadedCount} of ${files.length} files...`;
+            });
+
+            // সব ডাউনলোড শেষ হওয়া পর্যন্ত অপেক্ষা করা
+            await Promise.all(downloadPromises);
+
+            // ৪. জিপ ফাইল জেনারেট করা
+            statusDiv.textContent = 'Packing files into ZIP...';
+            const content = await zip.generateAsync({ type: 'blob' });
+
+            // ৫. ডাউনলোড শুরু করা
+            const downloadUrl = window.URL.createObjectURL(content);
             const a = document.createElement('a');
             a.href = downloadUrl;
-            a.download = `${creds.repo}-${creds.branch}.zip`;
+            a.download = `${creds.repo}-${creds.branch}-local.zip`;
             document.body.appendChild(a);
             a.click();
             
-            // ক্লিনআপ
-            setTimeout(() => {
-                window.URL.revokeObjectURL(downloadUrl);
-                a.remove();
-            }, 100);
+            window.URL.revokeObjectURL(downloadUrl);
+            a.remove();
 
-            statusDiv.textContent = 'Download started!';
+            statusDiv.textContent = 'Successfully pulled and zipped!';
             statusDiv.className = 'text-sm text-center text-green-600';
-            notify('Repository pulled successfully');
+            notify('Pull successful (Zipped locally)');
 
         } catch (err) {
-            console.error('Detailed Error:', err);
-            
-            // যদি এটি CORS এরর হয়, তবে ব্যবহারকারীকে একটি বিকল্প উপায় বলা
-            if (err.message === 'Failed to fetch') {
-                statusDiv.innerHTML = `
-                    <span class="text-red-600">Network Error / CORS Blocked.</span><br>
-                    <small class="text-gray-500">Try using a VPN or check if the Repo/Token is correct.</small>
-                `;
-            } else {
-                statusDiv.textContent = 'Error: ' + err.message;
-                statusDiv.className = 'text-sm text-center text-red-600';
-            }
+            console.error('Pull Error:', err);
+            statusDiv.textContent = 'Error: ' + err.message;
+            statusDiv.className = 'text-sm text-center text-red-600';
         } finally {
             pullBtn.disabled = false;
         }
